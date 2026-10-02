@@ -1,0 +1,36 @@
+Speeduino custom v29 - VSS idle entry + idle stall saver
+
+Based directly on v28. All v28 flex-content plausibility / high-load hold and
+blend-start features are retained. All v27 dashpot/PID fixes are retained.
+
+VSS idle entry (PWM Closed+Open Loop only):
+- Above the configured vehicle-speed threshold, closed-loop PID correction is
+  suspended.
+- The idle valve follows the normal open-loop feed-forward value, including
+  dashpot, A/C idle-up and external idle-up additions.
+- The PID integral is reset while vehicle speed remains above the threshold.
+- At/below the threshold, closed-loop PID resumes.
+- The feature only acts when Speeduino VSS itself is configured/enabled.
+
+Recommended starting value:
+- VSS idle entry: On
+- Enable closed loop at/below: 5 kph
+
+Idle stall saver (PWM Closed Loop and PWM Closed+Open Loop):
+- Active only with engine running and TPS below the configured maximum.
+- Begins adding emergency airflow when RPM falls below idle target by the
+  configured Start amount.
+- Progressively moves the commanded valve duty toward the Rescue Duty.
+- Reaches full Rescue Duty at the configured Full amount below target.
+- It only increases valve duty; it never reduces the normal PID command.
+- Rotational-idle and overheat IAC overrides retain priority.
+
+Recommended starting values:
+- Stall saver: On
+- Start: 100 RPM below target
+- Full: 300 RPM below target
+- Rescue duty: 60%
+- Maximum TPS: 1.5%
+
+Firmware signature:
+speeduino 202504-flexrot-v29

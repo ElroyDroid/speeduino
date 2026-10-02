@@ -1,0 +1,32 @@
+Speeduino custom v26 - PWM closed-loop idle dashpot/follower
+
+Based on v25.1. All previous custom features and the 4-1 secondary-trigger
+filter changes are retained.
+
+Dashpot supports:
+- PWM Closed Loop (IAC algorithm 3)
+- PWM Closed+Open Loop / feed-forward (IAC algorithm 6)
+
+Operation:
+1. Opening the throttle above the configured TPS threshold arms the dashpot.
+2. When the throttle returns below/equal to the threshold, the dashpot starts.
+3. It temporarily adds configurable PWM idle-valve duty.
+4. The extra duty is linearly tapered by BOTH RPM-above-idle and time.
+5. The lower of the RPM taper and time taper is used.
+6. Once RPM reaches the configured end threshold above idle target, dashpot
+   contribution becomes zero and normal closed-loop idle takes over.
+7. Reopening the throttle cancels the current dashpot event and rearms it.
+
+Prepared starting settings in CurrentTune_v26_Dashpot.msq:
+- Enabled: On
+- Maximum added duty: 10%
+- Full dashpot: 700 RPM above idle target
+- Zero dashpot: 150 RPM above idle target
+- Maximum decay: 2000 ms
+- Activation TPS: 1.5%
+
+A/C idle load remains handled by Speeduino's existing A/C idle-up feed-forward.
+The dashpot is intended primarily to catch RPM during throttle return.
+
+Firmware signature:
+speeduino 202504-flexrot-v26
