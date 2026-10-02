@@ -943,12 +943,12 @@ struct config15 : public config_page_t {
   byte unused15_133 : 2;
   byte rotationalIdleMinCLT;          // temperature + 40 offset
   byte rotationalIdleMaxTPS;          // 0.5% units
-  byte rotationalIdleMaxRPMdiv100;
-  byte rotationalIdleCutPercent;      // 0-75 recommended
+  byte rotationalIdleMaxRPMdiv100;    // normal RI End RPM / governing target
+  byte rotationalIdleCutPercent;      // legacy normal-RI fixed cut; retained for EEPROM layout compatibility
   byte overheatAirPumpCLT;            // temperature + 40 offset
   byte overheatAirPumpIAC;            // PWM duty %
-  byte overheatAirPumpCutPercent;     // fuel+spark rotating cut %
-  byte overheatAirPumpMinRPMdiv100;   // only active above this RPM
+  byte overheatAirPumpCutPercent;     // legacy fixed-cut setting; retained for EEPROM compatibility
+  byte overheatAirPumpMinRPMdiv100;   // progressive cut starts above this RPM
   // E100 acceleration-enrichment endpoint tables. These are complete secondary
   // AE curves, not multipliers. The currently selected TPS/MAP AE mode chooses
   // the matching primary and E100 curves, then blends their looked-up values.
@@ -963,7 +963,7 @@ struct config15 : public config_page_t {
   // This can activate even when normal rotational idle is disabled.
   byte overheatAirPumpHysteresis;      // 158: CLT hysteresis in degrees C
   byte overheatAirPumpMaxTPS;          // 159: 0.5% units
-  byte overheatAirPumpMaxRPMdiv100;    // 160: RPM / 100
+  byte overheatAirPumpMaxRPMdiv100;    // 160: full fuel+spark cut RPM / 100
 
   // Normal rotational-idle PWM air override and transient ignition torque smoothing.
   byte rotationalIdleIAC;              // 161: PWM idle-valve duty while normal rotational idle is active
@@ -1006,6 +1006,8 @@ struct config15 : public config_page_t {
   byte idleStallSaverDuty;           // 198: maximum rescue PWM duty %
   byte idleStallSaverMaxTPS;         // 199: active at/below TPS, 0.5% units
 
-  byte Unused15_200_255[56];
+  // Rotational-idle governor tuning (200-201).
+  uint16_t rotationalIdleControlBandRPM; // 200-201: progressive cut band below End RPM, raw RPM
+  byte Unused15_202_255[54];
 
 } __attribute__((packed,aligned(__alignof__(uint16_t)))); //The 32 bit systems require all structs to be fully packed, aligned to their largest member type 

@@ -1637,7 +1637,7 @@ static void setupRotationalIdle(statuses &current, config2 &page2, config15 &pag
     current.rotationStatus = EngineRotationStatus::Running;
     current.coolant = 90;
     current.TPS = 0;
-    current.RPM = 950;
+    current.RPM = 1250; // 150 RPM below 1400 End RPM: first progressive cut step
     current.maxIgnOutputs = 4;
     current.injOutputs.primary = 4;
     current.injOutputs.secondary = 0;
@@ -1659,7 +1659,7 @@ static void test_rotational_idle_uses_configured_outputs_and_rotates(void)
     TEST_ASSERT_EQUAL_HEX8(0x0D, cut.ignitionChannels);
 }
 
-static void test_rotational_idle_exits_and_respects_existing_protection(void)
+static void test_rotational_idle_governs_above_end_and_respects_existing_protection(void)
 {
     statuses current = {}; config2 page2 = {}; config15 page15 = {};
     setupRotationalIdle(current, page2, page15);
@@ -1668,7 +1668,9 @@ static void test_rotational_idle_exits_and_respects_existing_protection(void)
     TEST_ASSERT_EQUAL(SchedulerCutStatus::None, cut.status);
     current.TPS = 0; current.RPM = 1600;
     cut = applyRotationalIdleCut(makeNoCutState(), current, page2, page15, NOT_A_PIN);
-    TEST_ASSERT_EQUAL(SchedulerCutStatus::None, cut.status);
+    TEST_ASSERT_EQUAL(SchedulerCutStatus::Full, cut.status);
+    TEST_ASSERT_EQUAL_HEX8(0x00, cut.ignitionChannels);
+    TEST_ASSERT_EQUAL_HEX8(0x0F, cut.fuelChannels);
     current.RPM = 950; current.rotationStatus = EngineRotationStatus::Cranking;
     cut = applyRotationalIdleCut(makeNoCutState(), current, page2, page15, NOT_A_PIN);
     TEST_ASSERT_EQUAL(SchedulerCutStatus::None, cut.status);
@@ -1683,6 +1685,7 @@ static void test_rotational_idle_fuel_cut_and_output_count(void)
     statuses current = {}; config2 page2 = {}; config15 page15 = {};
     setupRotationalIdle(current, page2, page15);
     page15.rotationalIdleCutFuel = 1;
+    current.RPM = 1350; // within final 200 RPM; 2-output setup requests one rolling cut
     current.maxIgnOutputs = 2; // e.g. wasted spark: rotate physical ignition outputs, not 4 cylinders
     current.injOutputs.primary = 4;
     ignitionCount = 0;
@@ -1698,13 +1701,34 @@ static void test_overheat_always_cuts_fuel_and_spark(void)
     page15.rotationalIdleMode = 0;
     page15.overheatAirPumpEnabled = 1;
     page15.overheatAirPumpCLT = temperatureAddOffset(90);
-    page15.overheatAirPumpMinRPMdiv100 = 5;
-    page15.overheatAirPumpCutPercent = 25;
-    current.coolant = 100; ignitionCount = 2;
+    page15.overheatAirPumpMaxTPS = 4;
+    page15.overheatAirPumpMinRPMdiv100 = 5;   // progressive cut starts at 500 RPM
+    page15.overheatAirPumpMaxRPMdiv100 = 15;  // full cut at 1500 RPM
+    current.coolant = 100;
+    current.TPS = 0;
+
+    // Between Start and Full-cut RPM the cut progressively rotates and always
+    // removes both fuel and spark from the same scheduler channels.
+    current.RPM = 1250;
+    ignitionCount = 2;
     auto cut = applyRotationalIdleCut(makeNoCutState(), current, page2, page15, NOT_A_PIN);
     TEST_ASSERT_EQUAL(SchedulerCutStatus::Rolling, cut.status);
-    TEST_ASSERT_EQUAL_HEX8(0x0B, cut.ignitionChannels);
-    TEST_ASSERT_EQUAL_HEX8(0x0B, cut.fuelChannels);
+    TEST_ASSERT_EQUAL_HEX8(0x02, cut.ignitionChannels);
+    TEST_ASSERT_EQUAL_HEX8(0x02, cut.fuelChannels);
+
+    // At/above the protection ceiling all fuel and spark are cut. Critically,
+    // protection does not switch off simply because RPM exceeds the ceiling.
+    current.RPM = 1600;
+    cut = applyRotationalIdleCut(makeNoCutState(), current, page2, page15, NOT_A_PIN);
+    TEST_ASSERT_EQUAL(SchedulerCutStatus::Full, cut.status);
+    TEST_ASSERT_EQUAL_HEX8(0x00, cut.ignitionChannels);
+    TEST_ASSERT_EQUAL_HEX8(0x00, cut.fuelChannels);
+
+    // Below the configured start RPM the overheat mode remains latched but does
+    // not cut cylinders, allowing airflow/IAC to recover RPM into the pump band.
+    current.RPM = 400;
+    cut = applyRotationalIdleCut(makeNoCutState(), current, page2, page15, NOT_A_PIN);
+    TEST_ASSERT_EQUAL(SchedulerCutStatus::None, cut.status);
 }
  void runAllTests(void)
 {
@@ -1773,7 +1797,7 @@ static void test_overheat_always_cuts_fuel_and_spark(void)
     RUN_TEST_P(test_NoCut_masks_unused);
     RUN_TEST_P(test_RollingCut_masks_unused);
     RUN_TEST_P(test_rotational_idle_uses_configured_outputs_and_rotates);
-    RUN_TEST_P(test_rotational_idle_exits_and_respects_existing_protection);
+    RUN_TEST_P(test_rotational_idle_governs_above_end_and_respects_existing_protection);
     RUN_TEST_P(test_rotational_idle_fuel_cut_and_output_count);
     RUN_TEST_P(test_overheat_always_cuts_fuel_and_spark);
     }

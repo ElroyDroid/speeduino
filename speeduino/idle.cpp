@@ -905,14 +905,14 @@ void idleControl(void)
     }
   }
 
-  // Normal rotational-idle PWM air override. Closed-loop/open-loop idle control
-  // continues normally whenever rotational idle is inactive. Overheat protection
+  // Normal rotational-idle PWM air override. While rotational idle is active the
+  // configured valve duty is held fixed; RPM is governed by progressive cylinder
+  // cuts in engineProtection.cpp. Overheat protection
   // below is evaluated afterwards and therefore retains priority if both are active.
   bool normalRotIdleActive = false;
   if (configPage15.rotationalIdleMode != 0U &&
       currentStatus.rotationStatus == EngineRotationStatus::Running &&
-      currentStatus.TPS <= configPage15.rotationalIdleMaxTPS &&
-      currentStatus.RPM <= RPM_COARSE.toUser(configPage15.rotationalIdleMaxRPMdiv100))
+      currentStatus.TPS <= configPage15.rotationalIdleMaxTPS)
   {
     const bool cltActive = currentStatus.coolant >= temperatureRemoveOffset(configPage15.rotationalIdleMinCLT);
     bool switchActive = false;
@@ -937,9 +937,10 @@ void idleControl(void)
     idle_pwm_target_value = percentage(currentStatus.idleLoad, idle_pwm_max_count);
   }
 
-  // Overheat air-pump mode: open the IAC to admit additional fresh air while the
-  // rotating fuel+spark cut above the configured CLT is active. This is deliberately
-  // limited to PWM IAC; it does not command the throttle or a stepper beyond normal logic.
+  // Overheat air-pump mode: hold the configured IAC duty for the complete
+  // latched low-TPS overheat condition. RPM only governs cylinder-cut severity in
+  // engineProtection.cpp; it must not switch the airflow off above the protection
+  // ceiling. Limited to PWM IAC; no throttle/stepper override is added.
   static bool overheatIacLatched = false;
   const int16_t overheatIacOnCLT = temperatureRemoveOffset(configPage15.overheatAirPumpCLT);
   const int16_t overheatIacOffCLT = overheatIacOnCLT - configPage15.overheatAirPumpHysteresis;
@@ -949,8 +950,6 @@ void idleControl(void)
 
   if (overheatIacLatched && isPwmIac(configPage6) &&
       currentStatus.rotationStatus == EngineRotationStatus::Running &&
-      currentStatus.RPM >= RPM_COARSE.toUser(configPage15.overheatAirPumpMinRPMdiv100) &&
-      currentStatus.RPM <= RPM_COARSE.toUser(configPage15.overheatAirPumpMaxRPMdiv100) &&
       currentStatus.TPS <= configPage15.overheatAirPumpMaxTPS)
   {
     currentStatus.idleLoad = (configPage15.overheatAirPumpIAC > 100U) ? 100U : configPage15.overheatAirPumpIAC;

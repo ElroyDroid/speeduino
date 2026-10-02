@@ -462,6 +462,44 @@ static bool rotationalIdleSwitchActive(const config15 &page15, uint8_t switchPin
 
 static uint8_t clampRotCut(uint8_t pct) { return (pct > 75U) ? 75U : pct; }
 
+// Haltech-style normal rotational-idle governor:
+// - activation is based on the configured CLT/switch/TPS conditions, NOT RPM
+// - the configured idle valve duty remains fixed while the function is active
+// - the configured RPM is an End RPM / governing target
+// - cylinder cuts progressively increase over the configured Control Band before End RPM
+// - at/above End RPM all configured cylinders are cut until RPM falls again
+//
+// The control band is tunable in 10 RPM increments. A zero/uninitialised value
+// safely falls back to 200 RPM so old tunes cannot disable the governor ramp.
+static uint8_t calcNormalRotIdleChannelsToCut(const statuses &current, const config15 &page15, uint8_t outputs)
+{
+  if (outputs == 0U) { return 0U; }
+
+  const uint16_t endRPM = RPM_COARSE.toUser(page15.rotationalIdleMaxRPMdiv100);
+  if (endRPM == 0U) { return 0U; }
+
+  const uint16_t controlBandRPM = (page15.rotationalIdleControlBandRPM == 0U)
+    ? 200U
+    : page15.rotationalIdleControlBandRPM;
+  const uint16_t startRPM = (endRPM > controlBandRPM) ? (endRPM - controlBandRPM) : 0U;
+
+  if (current.RPM <= startRPM) { return 0U; }
+  if (current.RPM >= endRPM) { return outputs; }
+
+  const uint16_t rampSpan = endRPM - startRPM;
+  const uint16_t intoRamp = current.RPM - startRPM;
+
+  // Floor division deliberately gives an initial no-cut zone at the bottom of
+  // the ramp. With a 200 RPM control band, 4 sequential outputs and a 1200 RPM
+  // End RPM this produces 1000-1049: 0 cuts, 1050-1099: 1,
+  // 1100-1149: 2, 1150-1199: 3,
+  // and >=1200: all 4. This makes End RPM act like an RPM governor rather than
+  // an enable/disable threshold.
+  uint8_t channels = (uint8_t)(((uint32_t)intoRamp * outputs) / rampSpan);
+  if (channels >= outputs) { channels = outputs - 1U; }
+  return channels;
+}
+
 statuses::scheduler_cut_t applyRotationalIdleCut(statuses::scheduler_cut_t cutState, const statuses &current, const config2 &page2, const config15 &page15, uint8_t switchPin)
 {
   (void)page2; // Retained in the API for compatibility; scheduler output counts drive the cut pattern.
@@ -477,7 +515,9 @@ statuses::scheduler_cut_t applyRotationalIdleCut(statuses::scheduler_cut_t cutSt
     case 3: active = cltActive || swActive; break;
     default: break;
   }
-  active = active && (current.TPS <= page15.rotationalIdleMaxTPS) && (current.RPM <= RPM_COARSE.toUser(page15.rotationalIdleMaxRPMdiv100));
+  // RPM is deliberately NOT part of activation. While RI is active, RPM controls
+  // cut severity. TPS/CLT/switch remain the enable conditions.
+  active = active && (current.TPS <= page15.rotationalIdleMaxTPS);
 
   // Independent overheat rotational-idle protection. This deliberately does not
   // depend on rotationalIdleMode, so engine protection remains available when
@@ -489,9 +529,10 @@ statuses::scheduler_cut_t applyRotationalIdleCut(statuses::scheduler_cut_t cutSt
   else if (!overheatLatched && current.coolant >= overheatOnCLT) { overheatLatched = true; }
   else if (overheatLatched && current.coolant <= overheatOffCLT) { overheatLatched = false; }
 
+  // Overheat rotational-idle protection stays active for the whole low-TPS
+  // overheat condition. RPM no longer disables protection above a ceiling;
+  // instead RPM determines cut severity below.
   const bool overheat = overheatLatched &&
-    (current.RPM >= RPM_COARSE.toUser(page15.overheatAirPumpMinRPMdiv100)) &&
-    (current.RPM <= RPM_COARSE.toUser(page15.overheatAirPumpMaxRPMdiv100)) &&
     (current.TPS <= page15.overheatAirPumpMaxTPS);
 
   if (!active && !overheat) { return cutState; }
@@ -503,13 +544,63 @@ statuses::scheduler_cut_t applyRotationalIdleCut(statuses::scheduler_cut_t cutSt
   const uint8_t ignOutputs = current.maxIgnOutputs;
   const uint8_t fuelOutputs = current.injOutputs.getTotalInjectors();
   const uint8_t outputs = cutFuel ? (std::min)(ignOutputs, fuelOutputs) : ignOutputs;
-  if (outputs < 2U) { return cutState; } // Cannot make a useful rotating cut while leaving an output firing.
+  if (outputs == 0U) { return cutState; }
 
-  const uint8_t pct = clampRotCut(overheat ? page15.overheatAirPumpCutPercent : page15.rotationalIdleCutPercent);
-  if (pct == 0U) { return cutState; }
-  uint8_t channelsToCut = (uint8_t)(((uint16_t)outputs * pct + 99U) / 100U);
-  if (channelsToCut == 0U) { channelsToCut = 1U; }
-  if (channelsToCut >= outputs) { channelsToCut = outputs - 1U; } // Always leave at least one scheduler output firing.
+  uint8_t channelsToCut = 0U;
+
+  if (overheat)
+  {
+    // Overheat protection is now an RPM governor / air-pump strategy:
+    //   <= Start RPM: no cylinder cut
+    //   Start..Full-cut RPM: progressively rotate fuel+spark cuts
+    //   >= Full-cut RPM: cut all fuel and spark until RPM falls again
+    //
+    // Exceeding the configured upper RPM can therefore never make protection
+    // disappear. The legacy fixed cut-percent byte remains only for tune/EEPROM
+    // compatibility and is not used by this strategy.
+    const uint16_t startRPM = RPM_COARSE.toUser(page15.overheatAirPumpMinRPMdiv100);
+    uint16_t fullCutRPM = RPM_COARSE.toUser(page15.overheatAirPumpMaxRPMdiv100);
+
+    // Fail safe if Start/Full-cut RPM are misconfigured.
+    if (fullCutRPM <= startRPM) { fullCutRPM = startRPM + 100U; }
+
+    if (current.RPM <= startRPM)
+    {
+      channelsToCut = 0U;
+    }
+    else if (current.RPM >= fullCutRPM)
+    {
+      channelsToCut = outputs;
+    }
+    else
+    {
+      const uint16_t rampSpan = fullCutRPM - startRPM;
+      const uint16_t intoRamp = current.RPM - startRPM;
+      channelsToCut = (uint8_t)(((uint32_t)intoRamp * outputs) / rampSpan);
+      if (channelsToCut >= outputs) { channelsToCut = outputs - 1U; }
+    }
+
+    if (channelsToCut == 0U && !active) { return cutState; }
+  }
+  else
+  {
+    channelsToCut = calcNormalRotIdleChannelsToCut(current, page15, outputs);
+    if (channelsToCut == 0U) { return cutState; }
+  }
+
+  const bool fullNormalRotIdleCut = active && !overheat && (channelsToCut >= outputs);
+  const bool fullOverheatCut = overheat && (channelsToCut >= outputs);
+  if (fullNormalRotIdleCut || fullOverheatCut)
+  {
+    cutState.status = SchedulerCutStatus::Full;
+    cutState.ignitionChannels = 0U;
+
+    // Overheat protection always cuts fuel with spark to avoid intentionally
+    // sending raw fuel into a hot catalyst/exhaust. Normal RI retains its
+    // user-selected spark-only or fuel+spark method.
+    if (cutFuel || fullOverheatCut) { cutState.fuelChannels = 0U; }
+    return maskUnusedChannels(cutState, current);
+  }
 
   cutState.status = SchedulerCutStatus::Rolling;
   const uint8_t first = (uint8_t)(ignitionCount % outputs);

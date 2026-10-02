@@ -337,9 +337,21 @@ TESTABLE_STATIC void upgradeV35toV36(void)
   }
 }
 
+TESTABLE_STATIC void upgradeV36toV37(void)
+{
+  if(loadEEPROMVersion() == 36U)
+  {
+    // v30.1 makes the normal rotational-idle progressive cut band tunable in raw RPM.
+    // Preserve v30.0 behaviour on upgrade by starting at the same 200 RPM band.
+    configPage15.rotationalIdleControlBandRPM = 200U;
+    saveAllPages();
+    saveEEPROMVersion(37);
+  }
+}
+
 void doUpdates(void)
 {
-  #define CURRENT_DATA_VERSION    36
+  #define CURRENT_DATA_VERSION    37
   //Only the latest update for small flash devices must be retained
    #ifndef SMALL_FLASH_MODE
 
@@ -1099,6 +1111,7 @@ void doUpdates(void)
   upgradeV33toV34();
   upgradeV34toV35();
   upgradeV35toV36();
+  upgradeV36toV37();
   //Move this #endif to only do latest updates to safe ROM space on small devices.
   #endif
 
@@ -1171,6 +1184,7 @@ void doUpdates(void)
     // Replace the neutral copies above with conservative E100 starting values.
     initialiseFlexE100StartingValues();
     configPage15.unused15_flexBlendEnable = 0;
+    configPage15.rotationalIdleControlBandRPM = 200U; // 200 RPM
 
     saveEEPROMVersion(CURRENT_DATA_VERSION);
   }
