@@ -1,0 +1,31 @@
+Speeduino custom v27 - dashpot/PID handover fix
+
+Based directly on v26, which the user clean-built successfully.
+
+Functional change from v26:
+- PWM Closed+Open Loop idle no longer resets the PID integral simply because
+  RPM is above idle target + hysteresis while TPS is closed.
+- PID integral is reset only when TPS is above the configured idle TPS limit.
+
+Reason:
+- In v26 the dashpot could add airflow while the integral was repeatedly reset
+  during the whole return-to-idle event.
+- That prevented closed-loop idle from building negative correction to pull
+  idle duty/RPM back down.
+- v27 lets the PID actively chase the idle target while the dashpot tapers away.
+
+Dashpot logic itself is unchanged from v26.
+
+Suggested starting tune in CurrentTune_v27_Dashpot_PIDFix.msq:
+- PWM Closed+Open Loop
+- Minimum idle valve value: 28%
+- Maximum idle valve value: 58%
+- Dashpot enabled
+- Dashpot adder: 5%
+- Full dashpot: target + 700 RPM
+- Zero dashpot: target + 100 RPM
+- Maximum dashpot decay: 1200 ms
+- Dashpot activation TPS: 1.5%
+
+Firmware signature:
+speeduino 202504-flexrot-v27

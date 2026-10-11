@@ -581,6 +581,86 @@ static void test_lookupInjectorAngle_clamp_max_inj(void)
   TEST_ASSERT_EQUAL(CRANK_ANGLE_MAX_INJ, lookupInjectorAngle(current));
 }
 
+static void test_lookupInjectorAngle_vvt_fuel_timing_disabled(void)
+{
+  statuses current = {};
+  populate_2dtable(&injectorAngleTable, (uint16_t)350, RPM_COARSE.toRaw(1000));
+  current.setRpm(1000);
+  current.vvt1.angle = 40; // 20 crank degrees advance (0.5 degree units)
+  current.vvt1.angleError = false;
+
+  CRANK_ANGLE_MAX_INJ = 720U;
+  configPage6.vvtEnabled = 1;
+  configPage6.vvtMode = VVT_MODE_CLOSED_LOOP;
+  configPage6.vvtCLAlterFuelTiming = 0;
+
+  TEST_ASSERT_EQUAL_UINT16(350U, lookupInjectorAngle(current));
+}
+
+static void test_lookupInjectorAngle_vvt_fuel_timing_enabled(void)
+{
+  statuses current = {};
+  populate_2dtable(&injectorAngleTable, (uint16_t)350, RPM_COARSE.toRaw(1000));
+  current.setRpm(1000);
+  current.vvt1.angle = 40; // 20 crank degrees advance (0.5 degree units)
+  current.vvt1.angleError = false;
+
+  CRANK_ANGLE_MAX_INJ = 720U;
+  configPage6.vvtEnabled = 1;
+  configPage6.vvtMode = VVT_MODE_CLOSED_LOOP;
+  configPage6.vvtCLAlterFuelTiming = 1;
+
+  TEST_ASSERT_EQUAL_UINT16(330U, lookupInjectorAngle(current));
+}
+
+static void test_lookupInjectorAngle_vvt_fuel_timing_zero_advance_preserves_720(void)
+{
+  statuses current = {};
+  populate_2dtable(&injectorAngleTable, (uint16_t)720, RPM_COARSE.toRaw(1000));
+  current.setRpm(1000);
+  current.vvt1.angle = 0;
+  current.vvt1.angleError = false;
+
+  CRANK_ANGLE_MAX_INJ = 720U;
+  configPage6.vvtEnabled = 1;
+  configPage6.vvtMode = VVT_MODE_CLOSED_LOOP;
+  configPage6.vvtCLAlterFuelTiming = 1;
+
+  TEST_ASSERT_EQUAL_UINT16(720U, lookupInjectorAngle(current));
+}
+
+static void test_lookupInjectorAngle_vvt_fuel_timing_error_fallback(void)
+{
+  statuses current = {};
+  populate_2dtable(&injectorAngleTable, (uint16_t)350, RPM_COARSE.toRaw(1000));
+  current.setRpm(1000);
+  current.vvt1.angle = 40;
+  current.vvt1.angleError = true;
+
+  CRANK_ANGLE_MAX_INJ = 720U;
+  configPage6.vvtEnabled = 1;
+  configPage6.vvtMode = VVT_MODE_CLOSED_LOOP;
+  configPage6.vvtCLAlterFuelTiming = 1;
+
+  TEST_ASSERT_EQUAL_UINT16(350U, lookupInjectorAngle(current));
+}
+
+static void test_lookupInjectorAngle_vvt_fuel_timing_wrap(void)
+{
+  statuses current = {};
+  populate_2dtable(&injectorAngleTable, (uint16_t)10, RPM_COARSE.toRaw(1000));
+  current.setRpm(1000);
+  current.vvt1.angle = 40; // 20 degrees: 10 - 20 wraps to 710
+  current.vvt1.angleError = false;
+
+  CRANK_ANGLE_MAX_INJ = 720U;
+  configPage6.vvtEnabled = 1;
+  configPage6.vvtMode = VVT_MODE_CLOSED_LOOP;
+  configPage6.vvtCLAlterFuelTiming = 1;
+
+  TEST_ASSERT_EQUAL_UINT16(710U, lookupInjectorAngle(current));
+}
+
 constexpr uint8_t PRIMING_PULSE_WIDTH = 5;
 
 static void assert_isPriming(FuelSchedule &schedule, bool priming)
@@ -951,6 +1031,11 @@ void testFuelController(void)
     RUN_TEST_P(test_setFuelChannelSchedule_starts_pending_when_enabled);
     RUN_TEST_P(test_setFuelChannelSchedule_ignores_zero_timeout);
     RUN_TEST_P(test_lookupInjectorAngle_clamp_max_inj);
+    RUN_TEST_P(test_lookupInjectorAngle_vvt_fuel_timing_disabled);
+    RUN_TEST_P(test_lookupInjectorAngle_vvt_fuel_timing_enabled);
+    RUN_TEST_P(test_lookupInjectorAngle_vvt_fuel_timing_zero_advance_preserves_720);
+    RUN_TEST_P(test_lookupInjectorAngle_vvt_fuel_timing_error_fallback);
+    RUN_TEST_P(test_lookupInjectorAngle_vvt_fuel_timing_wrap);
     RUN_TEST_P(test_beginInjectorPriming_floodclear);
     RUN_TEST_P(test_beginInjectorPriming);
     RUN_TEST_P(test_setFuelChannelSchedules_returnsInjectionAngle);

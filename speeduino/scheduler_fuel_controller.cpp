@@ -165,7 +165,31 @@ TESTABLE_INLINE_STATIC uint16_t lookupInjectorAngle(const statuses &current)
 {
   uint16_t injAngle = table2D_getValue(&injectorAngleTable, current.RPMdiv100);
   // Do not combine (std::min)() & table2D_getValue() - if (std::min)() is a macro, we could call table2D_getValue twice
-  return (std::min)(uint16_t(CRANK_ANGLE_MAX_INJ), injAngle);
+  injAngle = (std::min)(uint16_t(CRANK_ANGLE_MAX_INJ), injAngle);
+
+  // V30.4: Keep end-of-injection timing referenced to the intake cam when
+  // closed-loop VVT fuel-timing compensation is enabled. VVT angle is stored
+  // internally in 0.5 crank-degree units, so convert to whole crank degrees
+  // before applying it to the integer-degree injector angle table. Positive
+  // cam advance means injection must end earlier by the same amount.
+  //
+  // Use measured cam angle rather than target angle so transient VVT movement
+  // is followed correctly. If the VVT angle is invalid, fall back to the base
+  // injector timing table rather than applying an unsafe correction.
+  if (configPage6.vvtEnabled &&
+      (configPage6.vvtMode == VVT_MODE_CLOSED_LOOP) &&
+      configPage6.vvtCLAlterFuelTiming &&
+      !current.vvt1.angleError)
+  {
+    const int16_t vvtCrankDegrees = current.vvt1.angle / 2;
+    if (vvtCrankDegrees != 0)
+    {
+      const int16_t adjustedAngle = (int16_t)injAngle - vvtCrankDegrees;
+      injAngle = (uint16_t)normalize((int16_t)0, (int16_t)CRANK_ANGLE_MAX_INJ, adjustedAngle);
+    }
+  }
+
+  return injAngle;
 }
 
 TESTABLE_INLINE_STATIC uint16_t updatePwAngleCache(uint16_t pw, injectorAngleCalcCache *pCache) {

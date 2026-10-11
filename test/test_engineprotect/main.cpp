@@ -1694,6 +1694,39 @@ static void test_rotational_idle_fuel_cut_and_output_count(void)
     TEST_ASSERT_EQUAL_HEX8(0x0E, cut.fuelChannels);
 }
 
+static void test_rotational_idle_entry_exit_hysteresis(void)
+{
+    statuses current = {}; config2 page2 = {}; config15 page15 = {};
+    setupRotationalIdle(current, page2, page15);
+    page15.rotationalIdleEntryRPM = 1500U;
+    page15.rotationalIdleExitRPM = 1700U;
+
+    // Reset the internal latch with an ineligible condition.
+    current.TPS = 10;
+    (void)applyRotationalIdleCut(makeNoCutState(), current, page2, page15, NOT_A_PIN);
+
+    // Closed-throttle overrun above Entry RPM must not activate RI.
+    current.TPS = 0;
+    current.RPM = 2000;
+    auto cut = applyRotationalIdleCut(makeNoCutState(), current, page2, page15, NOT_A_PIN);
+    TEST_ASSERT_EQUAL(SchedulerCutStatus::None, cut.status);
+
+    // Falling to Entry RPM latches RI on. At 1400 End RPM this is full cut.
+    current.RPM = 1500;
+    cut = applyRotationalIdleCut(makeNoCutState(), current, page2, page15, NOT_A_PIN);
+    TEST_ASSERT_EQUAL(SchedulerCutStatus::Full, cut.status);
+
+    // Hysteresis keeps RI latched between Entry and Exit RPM.
+    current.RPM = 1600;
+    cut = applyRotationalIdleCut(makeNoCutState(), current, page2, page15, NOT_A_PIN);
+    TEST_ASSERT_EQUAL(SchedulerCutStatus::Full, cut.status);
+
+    // At Exit RPM it releases, restoring normal overrun behaviour.
+    current.RPM = 1700;
+    cut = applyRotationalIdleCut(makeNoCutState(), current, page2, page15, NOT_A_PIN);
+    TEST_ASSERT_EQUAL(SchedulerCutStatus::None, cut.status);
+}
+
 static void test_overheat_always_cuts_fuel_and_spark(void)
 {
     statuses current = {}; config2 page2 = {}; config15 page15 = {};
@@ -1799,6 +1832,7 @@ static void test_overheat_always_cuts_fuel_and_spark(void)
     RUN_TEST_P(test_rotational_idle_uses_configured_outputs_and_rotates);
     RUN_TEST_P(test_rotational_idle_governs_above_end_and_respects_existing_protection);
     RUN_TEST_P(test_rotational_idle_fuel_cut_and_output_count);
+    RUN_TEST_P(test_rotational_idle_entry_exit_hysteresis);
     RUN_TEST_P(test_overheat_always_cuts_fuel_and_spark);
     }
 }

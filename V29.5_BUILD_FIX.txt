@@ -1,0 +1,22 @@
+Speeduino custom v29.5 - modern AVR-GCC build environment
+
+Functional ECU behaviour is unchanged from v29.
+
+The previous build confirmed that simply removing the GCC8 guard is not
+sufficient: avr-gcc 7.3 still cannot correctly compile the current avr-libstdcpp
+headers, producing missing std::array, std::lower_bound, std::numeric_limits,
+std::tuple_size and related errors.
+
+v29.5 therefore uses AVR-GCC 12.1.0 for the Mega2560 build. The pre-build
+script downloads the Windows x64 toolchain and current avr-libstdcpp headers
+into the project's .pio folder and forces PlatformIO to use those compiler
+tools for this environment.
+
+Expected build output:
+Using modern AVR-GCC toolchain: ...\.pio\avr-gcc-12.1.0
+Using avr-libstdcpp headers: ...\.pio\avr-libstdcpp\include
+
+The first build needs internet access. Later builds use the cached copies.
+
+Firmware signature:
+speeduino 202504-flexrot-v29.5

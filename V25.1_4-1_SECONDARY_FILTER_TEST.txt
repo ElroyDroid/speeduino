@@ -1,0 +1,31 @@
+Speeduino custom v25 - Toyota 2NZ 4-1 secondary-filter test
+
+Based on v24.1. Existing Flex table blending and the v24.1 phase-valid
+synchronisation change are retained.
+
+Only the SEC_TRIGGER_4_1 secondary filter is changed:
+
+1. Regular accepted cam teeth:
+   old: triggerSecFilterTime = curGap2 / 4  (25%)
+   new: triggerSecFilterTime = curGap2 / 2  (50%)
+
+2. After a positively detected long 4-1 gap:
+   old: triggerSecFilterTime = 0
+   new: triggerSecFilterTime = curGap2 / 4
+   Because the long gap is approximately 2x a regular 4-1 gap, this retains
+   approximately a 50%-of-normal-gap filter immediately after the missing position.
+
+3. >3-tooth recovery path:
+   old: filter reset to 0
+   new: filter = curGap2 / 2
+
+Purpose:
+Reject the short secondary-trigger chatter seen in the 2NZ cranking composite logs
+without changing primary-trigger filtering, VVT control, trigger edge, or the
+underlying 4-1 phase logic.
+
+
+v25.1 packaging/build note:
+- No functional change to the v25 4-1 secondary filtering.
+- speeduino.ino was deliberately touched so PlatformIO must regenerate and compile
+  speeduino.ino.cpp on incremental builds, avoiding the missing setup()/loop() link issue.

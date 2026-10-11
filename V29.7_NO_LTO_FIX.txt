@@ -1,0 +1,18 @@
+Speeduino custom v29.7 - AVR-GCC 12 LTO workaround
+
+Functional ECU behaviour is unchanged from v29.6.
+
+The v29.6 build compiled all source files successfully and failed only during
+the final link/LTO stage with an AVR-GCC 12.1.0 internal compiler error in
+Arduino Print.cpp:
+    internal compiler error: in add_clobbers, at config/avr/avr-dimode.md
+
+v29.7 disables Link Time Optimization for the Mega2560 environment:
+- adds -flto to build_unflags
+- adds -fno-lto to build_flags
+
+This keeps AVR-GCC 12.1.0 and the current avr-libstdcpp headers, but avoids the
+compiler bug in its LTO pass.
+
+Firmware signature:
+speeduino 202504-flexrot-v29.7

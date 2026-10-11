@@ -114,6 +114,100 @@ static inline uint32_t applyCorrections(uint32_t intermediate, uint16_t correcti
   return percentageApprox(corrections, intermediate); 
 }
 
+
+// Return injector differential pressure in 0.1 bar. currentStatus.fuelPressure is
+// gauge PSI; MAP and baro are absolute kPa. Therefore delta-P across the injector is:
+// rail(gauge) + barometric - manifold absolute.
+TESTABLE_INLINE_STATIC uint8_t calculateInjectorDifferentialPressureDbar(const statuses &current) {
+  const int16_t railDbar = (int16_t)(((uint16_t)current.fuelPressure * 689U + 500U) / 1000U); // psi -> 0.1 bar
+  const int16_t manifoldTermDbar = ((int16_t)current.baro - (int16_t)current.MAP) / 10;        // kPa -> 0.1 bar
+  const int16_t delta = railDbar + manifoldTermDbar;
+  return (uint8_t)clamp(delta, (int16_t)1, (int16_t)255);
+}
+
+// Small integer square-root avoids pulling floating point sqrt into the Mega build.
+static uint16_t integerSqrt32(uint32_t value) {
+  uint32_t op = value;
+  uint32_t res = 0U;
+  uint32_t one = UINT32_C(1) << 30;
+  while (one > op) { one >>= 2U; }
+  while (one != 0U) {
+    if (op >= (res + one)) {
+      op -= res + one;
+      res = (res >> 1U) + one;
+    } else {
+      res >>= 1U;
+    }
+    one >>= 2U;
+  }
+  return (uint16_t)res;
+}
+
+// Flow multiplier in per-mille. 1000 = no correction.
+TESTABLE_INLINE_STATIC uint16_t calculateInjectorPressureFlowPermille(const config10 &page10, const statuses &current) {
+  if ((configPage15.injPressureFlowEnable == 0U) || (page10.fuelPressureEnable == 0U) ||
+      (current.fuelPressure < 5U) || (configPage15.injPressureRefDbar == 0U)) {
+    return 1000U;
+  }
+  const uint8_t deltaP = calculateInjectorDifferentialPressureDbar(current);
+  // sqrt(ref/actual)*1000 = sqrt(ref*1,000,000/actual)
+  const uint32_t radicand = ((uint32_t)configPage15.injPressureRefDbar * UINT32_C(1000000)) / deltaP;
+  return clamp(integerSqrt32(radicand), (uint16_t)500U, (uint16_t)2000U);
+}
+
+static inline uint32_t applyInjectorPressureFlow(uint32_t effectivePw, const config10 &page10, const statuses &current) {
+  const uint16_t permille = calculateInjectorPressureFlowPermille(page10, current);
+  return (effectivePw * permille + 500U) / 1000U;
+}
+
+static uint8_t find6Bin(const byte *bins, uint8_t value) {
+  if (value <= bins[0]) { return 0U; }
+  for (uint8_t i = 0U; i < 5U; i++) {
+    if (value <= bins[i + 1U]) { return i; }
+  }
+  return 4U;
+}
+
+static uint16_t interpolateU8(uint8_t x, uint8_t x0, uint8_t x1, uint16_t y0, uint16_t y1) {
+  if ((x1 <= x0) || (x <= x0)) { return y0; }
+  if (x >= x1) { return y1; }
+  const uint16_t span = (uint16_t)x1 - x0;
+  const uint16_t pos = (uint16_t)x - x0;
+  if (y1 >= y0) { return y0 + (uint16_t)(((uint32_t)(y1 - y0) * pos) / span); }
+  return y0 - (uint16_t)(((uint32_t)(y0 - y1) * pos) / span);
+}
+
+// Bilinear pressure x voltage table. Stored table values are 0.01 ms = 10 us.
+TESTABLE_INLINE_STATIC uint16_t calculatePressureDeadTimeUs(const config2 &page2, const config10 &page10, const statuses &current) {
+  if ((configPage15.injPressureDeadTimeEnable == 0U) || (page10.fuelPressureEnable == 0U) ||
+      (current.fuelPressure < 5U)) {
+    return page2.injOpen * current.batCorrection;
+  }
+
+  const uint8_t p = calculateInjectorDifferentialPressureDbar(current);
+  const uint8_t v = current.battery10;
+  const byte *pBins = configPage15.injDeadTimePressureBins;
+  const byte *vBins = configPage15.injDeadTimeVoltageBins;
+  const uint8_t pi = find6Bin(pBins, p);
+  const uint8_t vi = find6Bin(vBins, v);
+
+  const uint8_t p0 = pBins[pi];
+  const uint8_t p1 = pBins[pi + 1U];
+  const uint8_t v0 = vBins[vi];
+  const uint8_t v1 = vBins[vi + 1U];
+
+  // Table is laid out [pressure row][voltage column].
+  const uint8_t *table = configPage15.injDeadTimeTable;
+  const uint16_t q00 = (uint16_t)table[(uint8_t)(pi * 6U + vi)] * 10U;
+  const uint16_t q01 = (uint16_t)table[(uint8_t)(pi * 6U + vi + 1U)] * 10U;
+  const uint16_t q10 = (uint16_t)table[(uint8_t)((pi + 1U) * 6U + vi)] * 10U;
+  const uint16_t q11 = (uint16_t)table[(uint8_t)((pi + 1U) * 6U + vi + 1U)] * 10U;
+
+  const uint16_t lowP = interpolateU8(v, v0, v1, q00, q01);
+  const uint16_t highP = interpolateU8(v, v0, v1, q10, q11);
+  return interpolateU8(p, p0, p1, lowP, highP);
+}
+
 static inline uint16_t computeInitialPw(uint16_t REQ_FUEL, uint8_t VE) {
   // REQ_FUEL max is 255*100 = 25500
   // VE max is 255
@@ -142,14 +236,16 @@ TESTABLE_INLINE_STATIC uint16_t calcPrimaryPulseWidth(uint16_t injOpenTime, cons
   uint32_t intermediate = 
     includeAe(
       includeOpenTime(
-        applyCorrections(
-          applyAFRMultiplier(
-            applyMapMode(
-              computeInitialPw(REQ_FUEL, current.VE), 
-              page2, current),
-            page2, page6, current), 
-        current.corrections), 
-      injOpenTime), 
+        applyInjectorPressureFlow(
+          applyCorrections(
+            applyAFRMultiplier(
+              applyMapMode(
+                computeInitialPw(REQ_FUEL, current.VE),
+                page2, current),
+              page2, page6, current),
+            current.corrections),
+          page10, current),
+      injOpenTime),
       REQ_FUEL, page2, current);
 
   // Make sure this won't overflow when we convert to uInt. This means the maximum pulsewidth possible is 65.535mS
@@ -239,15 +335,15 @@ TESTABLE_INLINE_STATIC pulseWidths calculateSecondaryPw(uint16_t primaryPw, uint
   return { primaryPw, 0U };
 }
 
-TESTABLE_INLINE_STATIC uint16_t calculateOpenTime(const config2 &page2, const statuses &current) {
-  // Convert injector open time from tune to microseconds & apply voltage correction if required
-  return page2.injOpen * current.batCorrection; 
+TESTABLE_INLINE_STATIC uint16_t calculateOpenTime(const config2 &page2, const config10 &page10, const statuses &current) {
+  // Use the pressure x voltage table when enabled, otherwise retain legacy Speeduino behaviour.
+  return calculatePressureDeadTimeUs(page2, page10, current);
 }
 
 pulseWidths computePulseWidths(const config2 &page2, const config6 &page6, const config10 &page10, const statuses &current) {
   if (current.corrections!=0U) {
     uint16_t pwLimit = calculatePWLimit(page2, current);
-    uint16_t injOpenTime = calculateOpenTime(page2, current);
+    uint16_t injOpenTime = calculateOpenTime(page2, page10, current);
     uint16_t primaryPw = applyPwLimits(calcPrimaryPulseWidth( injOpenTime, 
                                                               page2,
                                                               page6,

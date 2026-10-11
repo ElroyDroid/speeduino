@@ -42,6 +42,7 @@ static bool idleDashpotArmed = false;
 static bool idleDashpotActive = false;
 static uint8_t idleDashpotStartDuty = 0U;
 static uint32_t idleDashpotStartTime = 0U;
+static bool idleDashpotDecayStarted = false;
 
 static inline void resetIdleDashpot(void)
 {
@@ -49,6 +50,7 @@ static inline void resetIdleDashpot(void)
   idleDashpotActive = false;
   idleDashpotStartDuty = 0U;
   idleDashpotStartTime = 0U;
+  idleDashpotDecayStarted = false;
 }
 
 /**
@@ -102,6 +104,10 @@ static uint8_t getIdleDashpotAdderPercent(void)
     {
       idleDashpotActive = true;
       idleDashpotStartDuty = (configPage15.idleDashpotAdder > 100U) ? 100U : configPage15.idleDashpotAdder;
+      // Legacy behaviour starts the timer immediately at throttle closure.
+      // Optional v30.5 behaviour holds full dashpot above the configured Start RPM
+      // and begins time decay only when RPM enters the catch zone.
+      idleDashpotDecayStarted = (configPage15.idleDashpotHoldAboveStart == 0U) || (rpmAboveTarget <= startAbove);
       idleDashpotStartTime = millis();
     }
   }
@@ -126,16 +132,42 @@ static uint8_t getIdleDashpotAdderPercent(void)
   const uint32_t decayMs = (uint32_t)configPage15.idleDashpotDecay10ms * 10UL;
   if (decayMs > 0U)
   {
-    const uint32_t elapsed = millis() - idleDashpotStartTime;
-    if (elapsed >= decayMs)
+    // Haltech-style catch behaviour: optionally hold the full dashpot while RPM
+    // is above the configured Start RPM. Start the decay clock only once RPM
+    // falls into the catch region. This stops the timer expiring during a long
+    // coast-down before the engine actually reaches idle.
+    if (!idleDashpotDecayStarted && rpmAboveTarget <= startAbove)
     {
-      idleDashpotActive = false;
-      return 0U;
+      idleDashpotDecayStarted = true;
+      idleDashpotStartTime = millis();
     }
-    timeDuty = (uint8_t)(((uint32_t)idleDashpotStartDuty * (decayMs - elapsed)) / decayMs);
+
+    if (idleDashpotDecayStarted)
+    {
+      const uint32_t elapsed = millis() - idleDashpotStartTime;
+      if (elapsed >= decayMs)
+      {
+        idleDashpotActive = false;
+        return 0U;
+      }
+      timeDuty = (uint8_t)(((uint32_t)idleDashpotStartDuty * (decayMs - elapsed)) / decayMs);
+    }
   }
 
-  const uint8_t result = (rpmDuty < timeDuty) ? rpmDuty : timeDuty;
+  uint8_t result = (rpmDuty < timeDuty) ? rpmDuty : timeDuty;
+
+  // If the existing Idle Up input is active (the user's A/C relay input), add
+  // the configured Idle Up amount a second time only during the dashpot event.
+  // The extra amount follows the same RPM/time taper, so it is strongest while
+  // catching a fast RPM fall and disappears before normal steady idle.
+  if (result > 0U && configPage15.idleDashpotAcCatch != 0U && currentStatus.idleUpActive && idleDashpotStartDuty > 0U)
+  {
+    const uint8_t acCatchMax = (configPage2.idleUpAdder > 100U) ? 100U : configPage2.idleUpAdder;
+    const uint8_t acCatch = (uint8_t)(((uint16_t)acCatchMax * result) / idleDashpotStartDuty);
+    const uint16_t combined = (uint16_t)result + acCatch;
+    result = (combined > 100U) ? 100U : (uint8_t)combined;
+  }
+
   if (result == 0U) { idleDashpotActive = false; }
   return result;
 }
@@ -909,7 +941,7 @@ void idleControl(void)
   // configured valve duty is held fixed; RPM is governed by progressive cylinder
   // cuts in engineProtection.cpp. Overheat protection
   // below is evaluated afterwards and therefore retains priority if both are active.
-  bool normalRotIdleActive = false;
+  bool normalRotIdleEligible = false;
   if (configPage15.rotationalIdleMode != 0U &&
       currentStatus.rotationStatus == EngineRotationStatus::Running &&
       currentStatus.TPS <= configPage15.rotationalIdleMaxTPS)
@@ -924,12 +956,40 @@ void idleControl(void)
 
     switch (configPage15.rotationalIdleMode)
     {
-      case 1: normalRotIdleActive = cltActive; break;
-      case 2: normalRotIdleActive = switchActive; break;
-      case 3: normalRotIdleActive = cltActive || switchActive; break;
+      case 1: normalRotIdleEligible = cltActive; break;
+      case 2: normalRotIdleEligible = switchActive; break;
+      case 3: normalRotIdleEligible = cltActive || switchActive; break;
       default: break;
     }
   }
+
+  // RPM entry/exit hysteresis keeps the fixed RI valve duty out of normal
+  // overrun. This is intentionally mirrored in engineProtection.cpp so the
+  // airflow override and rotating cut enable/disable together.
+  static bool normalRotIdleRpmLatched = false;
+  const uint16_t normalRiEndRPM = RPM_COARSE.toUser(configPage15.rotationalIdleMaxRPMdiv100);
+  const uint16_t normalRiEntryRPM = (configPage15.rotationalIdleEntryRPM != 0U)
+    ? configPage15.rotationalIdleEntryRPM
+    : (uint16_t)(normalRiEndRPM + 300U);
+  uint16_t normalRiExitRPM = (configPage15.rotationalIdleExitRPM != 0U)
+    ? configPage15.rotationalIdleExitRPM
+    : (uint16_t)(normalRiEntryRPM + 200U);
+  if (normalRiExitRPM <= normalRiEntryRPM) { normalRiExitRPM = normalRiEntryRPM + 100U; }
+
+  if (!normalRotIdleEligible || currentStatus.rotationStatus != EngineRotationStatus::Running)
+  {
+    normalRotIdleRpmLatched = false;
+  }
+  else if (!normalRotIdleRpmLatched && currentStatus.RPM <= normalRiEntryRPM)
+  {
+    normalRotIdleRpmLatched = true;
+  }
+  else if (normalRotIdleRpmLatched && currentStatus.RPM >= normalRiExitRPM)
+  {
+    normalRotIdleRpmLatched = false;
+  }
+
+  const bool normalRotIdleActive = normalRotIdleEligible && normalRotIdleRpmLatched;
 
   if (normalRotIdleActive && isPwmIac(configPage6))
   {

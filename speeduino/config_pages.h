@@ -976,8 +976,10 @@ struct config15 : public config_page_t {
   // Closed-loop PWM idle dashpot / follower (181-186).
   // Adds temporary valve duty after the throttle closes, then tapers it away
   // as RPM approaches the normal closed-loop idle target.
-  byte idleDashpotEnabled : 1;       // 181 bit 0
-  byte unused15_181 : 7;
+  byte idleDashpotEnabled : 1;         // 181 bit 0
+  byte idleDashpotHoldAboveStart : 1;  // 181 bit 1: do not start time decay until RPM enters catch zone
+  byte idleDashpotAcCatch : 1;          // 181 bit 2: while Idle Up/A-C input active, add its duty again during dashpot catch
+  byte unused15_181 : 5;
   byte idleDashpotAdder;             // 182: maximum additional PWM duty %
   byte idleDashpotStartRPMdiv10;     // 183: full dashpot above target by RPM/10
   byte idleDashpotEndRPMdiv10;       // 184: zero dashpot at target + RPM/10
@@ -1006,8 +1008,18 @@ struct config15 : public config_page_t {
   byte idleStallSaverDuty;           // 198: maximum rescue PWM duty %
   byte idleStallSaverMaxTPS;         // 199: active at/below TPS, 0.5% units
 
-  // Rotational-idle governor tuning (200-201).
+  // Rotational-idle governor tuning (200-205).
   uint16_t rotationalIdleControlBandRPM; // 200-201: progressive cut band below End RPM, raw RPM
-  byte Unused15_202_255[54];
+  uint16_t rotationalIdleEntryRPM;       // 202-203: latch RI on at/below this RPM
+  uint16_t rotationalIdleExitRPM;        // 204-205: unlatch RI at/above this RPM
+  // Injector differential-pressure compensation (206-255).
+  // Designed to fit exactly in the 50 bytes previously unused on page 15.
+  byte injPressureFlowEnable : 1;      // 206 bit 0: sqrt(deltaP_ref/deltaP) fuel-flow correction
+  byte injPressureDeadTimeEnable : 1;  // 206 bit 1: pressure x voltage dead-time table
+  byte injPressureRefDbar : 6;         // 206 bits 2-7: reference differential pressure in 0.1 bar (0-6.3 bar)
+  byte injRatedFlowDiv25;              // 207: injector flow at reference pressure, 25 cc/min units
+  byte injDeadTimePressureBins[6];     // 208-213: differential pressure, 0.1 bar
+  byte injDeadTimeVoltageBins[6];      // 214-219: battery voltage, 0.1 V
+  byte injDeadTimeTable[36];           // 220-255: 6x6 table, 0.01 ms (10 us) units
 
 } __attribute__((packed,aligned(__alignof__(uint16_t)))); //The 32 bit systems require all structs to be fully packed, aligned to their largest member type 

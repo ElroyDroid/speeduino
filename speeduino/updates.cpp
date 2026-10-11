@@ -349,9 +349,103 @@ TESTABLE_STATIC void upgradeV36toV37(void)
   }
 }
 
+TESTABLE_STATIC void upgradeV37toV38(void)
+{
+  if(loadEEPROMVersion() == 37U)
+  {
+    // v30.3 adds RPM entry/exit hysteresis so normal RI does not activate during
+    // higher-RPM closed-throttle deceleration. Raw RPM values, no scaling.
+    configPage15.rotationalIdleEntryRPM = 1500U;
+    configPage15.rotationalIdleExitRPM = 1700U;
+    saveAllPages();
+    saveEEPROMVersion(38);
+  }
+}
+
+static void initialiseInjectorPressureCompDefaults(void)
+{
+  // Disabled by default so upgrading preserves existing fueling until explicitly enabled.
+  configPage15.injPressureFlowEnable = 0U;
+  configPage15.injPressureDeadTimeEnable = 0U;
+  // Bosch 0280158117 default: nominal 550 cc/min at 3.0 bar differential pressure.
+  // Flow is stored in 25 cc/min units in the six otherwise-unused bits at byte 206.
+  configPage15.injRatedFlowDiv25 = 22U; // 22 * 25 = 550 cc/min
+  configPage15.injPressureRefDbar = 30U;
+  const uint8_t pressureBins[6] = {25U, 30U, 35U, 40U, 50U, 60U};
+  const uint8_t voltageBins[6] = {100U, 110U, 120U, 130U, 140U, 160U};
+  // Bosch 0280158117 published dead-time data, rounded to 0.01 ms.
+  const uint8_t deadTime[36] = {
+    118U, 99U, 83U, 69U, 64U, 46U,
+    128U,109U, 88U, 73U, 65U, 49U,
+    134U,112U, 94U, 75U, 69U, 54U,
+    141U,116U, 97U, 84U, 70U, 55U,
+    160U,130U,111U, 93U, 81U, 65U,
+    182U,147U,123U,104U, 87U, 70U
+  };
+  for (uint8_t i = 0U; i < 6U; i++) {
+    configPage15.injDeadTimePressureBins[i] = pressureBins[i];
+    configPage15.injDeadTimeVoltageBins[i] = voltageBins[i];
+  }
+  for (uint8_t i = 0U; i < 36U; i++) { configPage15.injDeadTimeTable[i] = deadTime[i]; }
+}
+
+TESTABLE_STATIC void upgradeV38toV39(void)
+{
+  if(loadEEPROMVersion() == 38U)
+  {
+    initialiseInjectorPressureCompDefaults();
+    saveAllPages();
+    saveEEPROMVersion(39);
+  }
+}
+
+TESTABLE_STATIC void upgradeV39toV40(void)
+{
+  if(loadEEPROMVersion() == 39U)
+  {
+    // Bytes 206 bits 2-7 were unused in v39. Populate only the new informational
+    // injector-flow field and preserve the user's existing pressure reference,
+    // enable flags and dead-time table.
+    configPage15.injRatedFlowDiv25 = 22U; // 550 cc/min default for Bosch 0280158117
+    saveAllPages();
+    saveEEPROMVersion(40);
+  }
+}
+
+TESTABLE_STATIC void upgradeV40toV41(void)
+{
+  if(loadEEPROMVersion() == 40U)
+  {
+    // v40 packed rated flow into byte 206 bits 2-7 and stored reference pressure
+    // in byte 207. v41 swaps those roles so injector flow can be edited as a
+    // normal numeric scalar while keeping the same two EEPROM bytes.
+    const uint8_t oldRatedFlowDiv25 = (uint8_t)((*((uint8_t *)&configPage15 + 206U) >> 2U) & 0x3FU);
+    const uint8_t oldPressureRefDbar = *((uint8_t *)&configPage15 + 207U);
+    configPage15.injPressureRefDbar = (oldPressureRefDbar > 63U) ? 63U : oldPressureRefDbar;
+    configPage15.injRatedFlowDiv25 = (oldRatedFlowDiv25 == 0U) ? 22U : oldRatedFlowDiv25;
+    saveAllPages();
+    saveEEPROMVersion(41);
+  }
+}
+
+
+TESTABLE_STATIC void upgradeV41toV42(void)
+{
+  if(loadEEPROMVersion() == 41U)
+  {
+    // v30.5 uses two formerly-unused bits in page 15 byte 181. Explicitly
+    // initialise them off so an existing v30.4 tune retains legacy behaviour
+    // until the user enables the new dashpot options.
+    configPage15.idleDashpotHoldAboveStart = 0U;
+    configPage15.idleDashpotAcCatch = 0U;
+    saveAllPages();
+    saveEEPROMVersion(42);
+  }
+}
+
 void doUpdates(void)
 {
-  #define CURRENT_DATA_VERSION    37
+  #define CURRENT_DATA_VERSION    42
   //Only the latest update for small flash devices must be retained
    #ifndef SMALL_FLASH_MODE
 
@@ -1112,6 +1206,11 @@ void doUpdates(void)
   upgradeV34toV35();
   upgradeV35toV36();
   upgradeV36toV37();
+  upgradeV37toV38();
+  upgradeV38toV39();
+  upgradeV39toV40();
+  upgradeV40toV41();
+  upgradeV41toV42();
   //Move this #endif to only do latest updates to safe ROM space on small devices.
   #endif
 
@@ -1185,6 +1284,9 @@ void doUpdates(void)
     initialiseFlexE100StartingValues();
     configPage15.unused15_flexBlendEnable = 0;
     configPage15.rotationalIdleControlBandRPM = 200U; // 200 RPM
+    configPage15.rotationalIdleEntryRPM = 1500U;
+    configPage15.rotationalIdleExitRPM = 1700U;
+    initialiseInjectorPressureCompDefaults();
 
     saveEEPROMVersion(CURRENT_DATA_VERSION);
   }

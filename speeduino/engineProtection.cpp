@@ -463,13 +463,14 @@ static bool rotationalIdleSwitchActive(const config15 &page15, uint8_t switchPin
 static uint8_t clampRotCut(uint8_t pct) { return (pct > 75U) ? 75U : pct; }
 
 // Haltech-style normal rotational-idle governor:
-// - activation is based on the configured CLT/switch/TPS conditions, NOT RPM
+// - CLT/switch/TPS make the feature eligible; an RPM entry/exit latch prevents
+//   rotational idle from holding the idle valve open during normal overrun
 // - the configured idle valve duty remains fixed while the function is active
 // - the configured RPM is an End RPM / governing target
 // - cylinder cuts progressively increase over the configured Control Band before End RPM
 // - at/above End RPM all configured cylinders are cut until RPM falls again
 //
-// The control band is tunable in 10 RPM increments. A zero/uninitialised value
+// The control band is stored directly in RPM. A zero/uninitialised value
 // safely falls back to 200 RPM so old tunes cannot disable the governor ramp.
 static uint8_t calcNormalRotIdleChannelsToCut(const statuses &current, const config15 &page15, uint8_t outputs)
 {
@@ -515,9 +516,35 @@ statuses::scheduler_cut_t applyRotationalIdleCut(statuses::scheduler_cut_t cutSt
     case 3: active = cltActive || swActive; break;
     default: break;
   }
-  // RPM is deliberately NOT part of activation. While RI is active, RPM controls
-  // cut severity. TPS/CLT/switch remain the enable conditions.
-  active = active && (current.TPS <= page15.rotationalIdleMaxTPS);
+  // CLT/switch/TPS make rotational idle eligible. A separate RPM latch then
+  // prevents RI from activating during normal closed-throttle deceleration at
+  // higher RPM. Once entered, hysteresis keeps it active until Exit RPM.
+  const bool normalRiEligible = active && (current.TPS <= page15.rotationalIdleMaxTPS);
+  static bool normalRiRpmLatched = false;
+
+  const uint16_t endRPM = RPM_COARSE.toUser(page15.rotationalIdleMaxRPMdiv100);
+  const uint16_t entryRPM = (page15.rotationalIdleEntryRPM != 0U)
+    ? page15.rotationalIdleEntryRPM
+    : (uint16_t)(endRPM + 300U);
+  uint16_t exitRPM = (page15.rotationalIdleExitRPM != 0U)
+    ? page15.rotationalIdleExitRPM
+    : (uint16_t)(entryRPM + 200U);
+  if (exitRPM <= entryRPM) { exitRPM = entryRPM + 100U; }
+
+  if (!normalRiEligible || current.rotationStatus != EngineRotationStatus::Running)
+  {
+    normalRiRpmLatched = false;
+  }
+  else if (!normalRiRpmLatched && current.RPM <= entryRPM)
+  {
+    normalRiRpmLatched = true;
+  }
+  else if (normalRiRpmLatched && current.RPM >= exitRPM)
+  {
+    normalRiRpmLatched = false;
+  }
+
+  active = normalRiEligible && normalRiRpmLatched;
 
   // Independent overheat rotational-idle protection. This deliberately does not
   // depend on rotationalIdleMode, so engine protection remains available when
